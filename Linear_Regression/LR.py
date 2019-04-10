@@ -1,14 +1,7 @@
-from sklearn.model_selection import train_test_split
-from sklearn import linear_model
-from sklearn import metrics
-from scipy.interpolate import *
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
-import sys
-import multiprocessing
-
-#BASH SCRIPT TO RUN ON ALL SYS ARG OPTIONS: for i in {1..10000}; do python3 lr.py $i; done
+import statsmodels.api as sm
 
 class portfolio:
     def __init__(self, bank = 10000, stocksOwned = 0, profits = 0):
@@ -37,39 +30,81 @@ class portfolio:
 def chooseAction(yPoly, y): #Returns true if predicted value n is an increase over y @ n-1, else returns false
     return yPoly > y
 
-col_names = ['count','prices']
-# load dataset
-df = pd.read_csv("DJI2.csv", header=None, names=col_names)
-X = df['count']
-X = X.values
-y = df['prices']
-y = y.values
-
-for i in range (1, 10000):
-    pfolio = portfolio()
+def fileWrite100(predictedPrices, profits): #Write the data for the smaller data set to a file
+    file = open("100predictions.txt", "a")
     
-    for n in range (1,27809, i):
-        #polyfit output: [m, b], y = mx + b
-        MBvalues = np.polyfit(X[0:n],y[0:n],1)
-        m,b = MBvalues
-        yPoly = (m*(n+1)) + b #Predict a value 1 timestep ahead
-        action = chooseAction(yPoly, y[n]) #True = buy, False = sell
+    for i in predictedPrices:
+        file.write(str(i)+"\n")
+    
+    file.close()
+
+    file = open("100profits", "a")
+
+    for j in profits:
+        file.write(str(j))
+
+    file.close()
+
+def fileWriteFullDataSet(predictedPrices, profits): #Write the data for the full data set to a file
+    file = open("predictions.txt", "a")
+    
+    for i in predictedPrices:
+        file.write(str(i)+"\n")
+
+    file.close()
+
+    file = open("profits.txt", "a")
+
+    for j in profits:
+        file.write(str(j))
+    
+    file.close()
+
+def DataSetRegression(X, y, dataSize): #Preform a linear regression on the data
+    profList = []
+    pfolio = portfolio()
+    predictedPrices = []
+    
+    X = sm.add_constant(X) # adding a constant
+    for n in range (5, dataSize, 1):
+        model = sm.OLS(y[n-5:n], X[n-5:n]).fit()
+        prediction = model.predict(X[n+1: n+2]).values
+        action = chooseAction(prediction, y[n])
         pfolio.executeAction(action, y[n])
+        predictedPrices.append(prediction)
+        pfolio.calcProfits()
+        profList.append(pfolio.profits)
+        print(y[n], y[n+1],predictedPrices[n-5], prediction, action, pfolio.assets, pfolio.profits)
 
-    pfolio.calcProfits()
-    f = open("profits.txt", "a+")
-    f.write(pfolio.profits)
-    f.close()
-    print(pfolio.profits)
-    del pfolio
+    fileWrite100(predictedPrices, profList) if dataSize == 103 else fileWriteFullDataSet(predictedPrices,profList)
+    print (pfolio.assets, pfolio.profits)
+    #plotData(predictedPrices, y)
 
 
 
-#plt.plot(X,y, 'o')
-#plt.plot(X,np.polyval(p1,X),'r-')
-#plt.plot(X,np.polyval(p2,X),'b--')
-#plt.plot(X,np.polyval(p3,X),'m:')
-#plt.show()
+def loadData(fileName):
+    col_names = ['y', 'x1','x2','x3','x4','x5']
+    df = pd.read_csv(fileName, header=None, names=col_names)
+    y = df['y']
+    X=df[['x1','x2','x3','x4','x5']]
+    return X,y
+
+def plotData(predictedPrices, y):
+    print (predictedPrices)
+    fig = plt.figure()
+    ax = fig.add_subplot(111)
+    ax.plot(predictedPrices, label ='Predicted Prices')
+    #ax.plot(y, label = 'Actual Prices')
+    plt.legend(loc=2)
+    plt.show()
+
+X,y = loadData("DJI.csv")
+DataSetRegression(X,y,103)
+X2,y2 = loadData("DJI2.csv")
+DataSetRegression(X2,y2,27808)
+
+
+
 
 
 
