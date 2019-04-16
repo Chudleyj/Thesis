@@ -3,73 +3,95 @@ import pandas as pd
 import talib
 import random
 import matplotlib.pyplot as plt
+import math
 from sklearn.preprocessing import StandardScaler, MinMaxScaler
 from keras.models import Sequential
 from keras.layers import Dense
 from keras.layers import Dropout
+from keras.layers import LSTM
+from keras.layers import Activation
+
+def create_dataset(dataset, look_back):
+    dataX, dataY = [], []
+    for i in range(look_back, len(dataset)):
+        dataX.append(dataset[i-look_back:i,0])
+        dataY.append(dataset[i,0])
+    return np.array(dataX), np.array(dataY)
 
 random.seed(17)
+dataframe = pd.read_csv('DJI.csv', usecols=[0])
+dataset = dataframe.values
+dataset = dataset.astype('float32')
 
-col_names = ['dates','prices']
-# load dataset
-dataset = pd.read_csv("DJI2.csv", header=None, names=col_names)
-dataset.drop('dates', axis=1, inplace=True)
-dataset['3day MA'] = dataset['prices'].shift(1).rolling(window = 3).mean()
-dataset['10day MA'] = dataset['prices'].shift(1).rolling(window = 10).mean()
-dataset['30day MA'] = dataset['prices'].shift(1).rolling(window = 30).mean()
-dataset['Std_dev']= dataset['prices'].rolling(5).std()
-dataset['RSI'] = talib.RSI(dataset['prices'].values, timeperiod = 9)
-dataset['Price_Rise'] = np.where(dataset['prices'].shift(-1) > dataset['prices'], 1, 0)
-dataset = dataset.dropna()
+sc = MinMaxScaler(feature_range = (0,1))
+dataset_scaled = sc.fit_transform(dataset)
 
-X = dataset.iloc[:,4:-1]
-y = dataset.iloc[:,-1]
+# split into train and test sets
+train_size = int(len(dataset_scaled) * 0.5)
+test_size = len(dataset_scaled) - train_size
+train, test = dataset_scaled[0:train_size,:], dataset_scaled[train_size:len(dataset),:]
 
-split = int(len(dataset)*0.9) #train on x % of data
-X_train, X_test, y_train, y_test = X[:split], X[split:], y[:split], y[split:]
+look_back = 5
+trainX, trainY = create_dataset(train, look_back)
+testX, testY = create_dataset(test, look_back)
 
-sc = StandardScaler()
-X_train = sc.fit_transform(X_train)
-X_test = sc.transform(X_test)
+trainX = np.reshape(trainX, (trainX.shape[0], trainX.shape[1], 1))
+testX = np.reshape(testX, (testX.shape[0], testX.shape[1], 1))
 
-output_data = MinMaxScaler(feature_range=(0,1))
-y_train = output_data.fit_transform(y_train.values.reshape(-1,1))
-y_test = output_data.fit_transform(y_test.values.reshape(-1,1))
+model = Sequential()
+model.add(LSTM(
+               units = 50,
+               return_sequences = True,
+               input_shape = (trainX.shape[1], 1)))
 
-classifier = Sequential()
+model.add(Dropout(0.2))
 
-classifier.add(Dense(units = 128, kernel_initializer = 'uniform', activation = 'relu', input_dim = X.shape[1]))
-classifier.add(Dropout(0.2))
-classifier.add(Dense(units = 128, kernel_initializer = 'uniform', activation = 'relu'))
-classifier.add(Dropout(0.2))
-classifier.add(Dense(units = 1, kernel_initializer = 'uniform', activation = 'sigmoid'))
+model.add(LSTM(
+               units = 100))
 
-classifier.compile(optimizer = 'adam', loss = 'mean_squared_error', metrics = ['accuracy'])
+model.add(Dropout(0.2))
 
-classifier.fit(X_train, y_train, batch_size = 10, epochs = 100)
+model.add(Dense(units = 1))
+model.add(Activation('linear'))
 
-y_pred = classifier.predict(X_test)
-y_pred = (y_pred > 0.5)
-n_pred = output_data.inverse_transform(y_pred)
+model.compile(loss = 'mean_squared_error', optimizer = 'rmsprop')
+model.fit(
+          trainX,
+          trainY,
+          epochs = 100,
+          batch_size = 1,
+          verbose = 1,
+          validation_split = 0.05)
 
-dataset['n_pred'] = np.NaN
-dataset.iloc[(len(dataset) - len(n_pred)):,-1:] = n_pred
-trade_dataset = dataset.dropna()
+trainScore = model.evaluate(trainX, trainY, verbose = 0)
+print('Train Score: %.2f MSE (%.2f RMSE)' % (trainScore, math.sqrt(trainScore)))
+testScore = model.evaluate(testX, testY, verbose=0)
+print('Test Score: %.2f MSE (%.2f RMSE)' % (testScore, math.sqrt(testScore)))
 
-trade_dataset['Tomorrows Returns'] = 0.
-trade_dataset['Tomorrows Returns'] = np.log(trade_dataset['prices']/trade_dataset['prices'].shift(1))
-trade_dataset['Tomorrows Returns'] = trade_dataset['Tomorrows Returns'].shift(-1)
+trainPredict = model.predict(trainX)
+testPredict = model.predict(testX)
 
-trade_dataset['Strategy Returns'] = 0.
-trade_dataset['Strategy Returns'] = np.where(trade_dataset['n_pred'] == True, trade_dataset['Tomorrows Returns'], - trade_dataset['Tomorrows Returns'])
+trainPredict = sc.inverse_transform(trainPredict)
+testPredict = sc.inverse_transform(testPredict)
 
-trade_dataset['Cumulative Market Returns'] = np.cumsum(trade_dataset['Tomorrows Returns'])
-trade_dataset['Cumulative Strategy Returns'] = np.cumsum(trade_dataset['Strategy Returns'])
+# shift train predictions for plotting
+trainPredictPlot = np.empty_like(dataset)
+trainPredictPlot[:, :] = np.nan
+trainPredictPlot[look_back:len(trainPredict)+look_back, :] = trainPredict
 
+# shift test predictions for plotting
+testPredictPlot = np.empty_like(dataset)
+testPredictPlot[:, :] = np.nan
+testPredictPlot[len(trainPredict)+(look_back*2):len(dataset)+1, :] = testPredict
 
-plt.figure(figsize=(10,5))
-plt.plot(trade_dataset['Cumulative Market Returns'], color='r', label='Market Returns')
-plt.plot(trade_dataset['Cumulative Strategy Returns'], color='g', label='Strategy Returns')
+# plot baseline and predictions
+plt.plot(dataset, color = 'r', label = 'Actual Prices')
+plt.plot(trainPredictPlot, 'b', label = 'Training Data Predictions')
+plt.plot(testPredictPlot, 'g', label = 'Test Data Predictions')
+plt.title('Dow Jones Neural Network Predictions')
+plt.xlabel('Year')
+plt.ylabel('Price ($USD)')
 plt.legend()
 plt.show()
+
 
